@@ -76,7 +76,7 @@ async def menu_text(cb: CallbackQuery, state: FSMContext):
             return
 
         # по умолчанию 9:16, тумблер переключает на 16:9
-        await state.update_data(ar="9:16", model="veo-3-quality")
+        await state.update_data(ar="9:16", model="veo-3-fast")
         await edit_or_send(
             cb,
             "✍🏻 Введите описание видео для генерации",

@@ -87,7 +87,7 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
             return
 
         # По умолчанию 9:16
-        await state.update_data(ar="9:16", model="veo-3-quality")
+        await state.update_data(ar="9:16", model="veo-3-fast")
         txt = (
             "📸 Отправьте изображение:\n\n"
             # "• С подписью — сразу запущу генерацию\n"
