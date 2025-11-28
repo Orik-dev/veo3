@@ -60,17 +60,12 @@ def _pick_code_and_detail(raw_message: Any, fallback_code: str = "TASK_FAILED") 
     return fallback_code, str(raw_message)
 
 
-# ─────────────────────────────────────────────────────────────
-# NEW: shared resilient HTTP helpers (timeouts + retries)
-# ─────────────────────────────────────────────────────────────
-
 def _default_timeout() -> aiohttp.ClientTimeout:
-    # Раздельные таймауты вместо общего total: не обрываем долгий TTFB провайдера
     return aiohttp.ClientTimeout(
-        total=None,       # не ограничиваем "суммарно"
-        connect=10,       # DNS+TCP
-        sock_connect=10,  # TLS handshake
-        sock_read=90,     # ожидание первого байта/чтение
+        total=None,
+        connect=10,
+        sock_connect=10,
+        sock_read=90,
     )
 
 
@@ -83,21 +78,15 @@ async def _post_json_with_retries(
     attempts: int = 4,
     base_backoff: float = 1.5,
 ) -> Tuple[int, Dict[str, Any]]:
-    """
-    POST с экспоненциальными ретраями на временные ошибки и таймауты.
-    Ретраим при: 429, 5xx, TimeoutError, ClientConnectionError и т.п.
-    """
     backoff = base_backoff
     for i in range(attempts):
         try:
             async with session.post(url, headers=headers, json=payload) as r:
-                # Пытаемся распарсить JSON даже на ошибках
                 try:
                     data = await r.json(content_type=None)
                 except Exception:
                     data = {"message": (await r.text())}
 
-                # 429/5xx считаем временными
                 if r.status == 429 or 500 <= r.status < 600:
                     raise aiohttp.ClientResponseError(r.request_info, r.history, status=r.status)
 
@@ -114,7 +103,6 @@ async def _post_json_with_retries(
             await asyncio.sleep(backoff + random.random())
             backoff *= 2
 
-    # до сюда не дойдём благодаря raise в последней итерации
     raise asyncio.TimeoutError("Exhausted POST retries")
 
 
@@ -154,22 +142,18 @@ async def _get_json_with_retries(
     raise asyncio.TimeoutError("Exhausted GET retries")
 
 
-# ─────────────────────────────────────────────────────────────
-# Public client functions
-# ─────────────────────────────────────────────────────────────
-
 async def generate(
     *,
     prompt: str,
     model_type: str = "veo-3-fast",
     aspect_ratio: str = "16:9",
     callback_url: Optional[str] = None,
-    bytes_image_b64: Optional[str] = None,   # и URL, и base64 — сервер разберёт
+    bytes_image_b64: Optional[str] = None,
     seed: Optional[int] = None,
     filter_text: Optional[str] = "translate",
     session: Optional[aiohttp.ClientSession] = None,
     raise_for_status: bool = True,
-    timeout_seconds: int = 90,  # ↑ было 30: даём больше на медленный TTFB
+    timeout_seconds: int = 90,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "prompt": prompt,
@@ -185,7 +169,6 @@ async def generate(
             s = s.split(",", 1)[1].strip()
         payload["bytes_image"] = s
 
-        # Лёгкий лог — без чувствительных данных
         try:
             approx_kb = int(len(s) * 0.75 // 1024) if not s.startswith("http") else 0
             logger.info("runblob.generate: bytes_image set (%s)", "url" if s.startswith("http") else f"~{approx_kb} KB")
@@ -197,13 +180,11 @@ async def generate(
     if filter_text is not None:
         payload["filter_text"] = filter_text
 
-    url = f"{BASE}/api/veo/generate"
+    url = f"{BASE}/v1/veo/generate"
 
-    # Сессия с раздельными таймаутами
     close_session = False
     if session is None:
         timeout = _default_timeout()
-        # если пользователь хочет всё же ограничить total — примем максимум из sock_read/его total
         if timeout_seconds and timeout_seconds > 0:
             timeout = aiohttp.ClientTimeout(
                 total=timeout_seconds, connect=10, sock_connect=10, sock_read=max(60, timeout_seconds - 5)
@@ -212,20 +193,35 @@ async def generate(
         close_session = True
 
     try:
-        # Ретраи на 429/5xx/таймауты
         status, data = await _post_json_with_retries(session, url, JSON_HEADERS, payload, attempts=4)
 
-        success = bool(data.get("success"))
-        if status >= 400 or not success:
+        # ✅ ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ОТВЕТА API
+        logger.info(f"RunBlob /generate response: HTTP {status}, data={data}")
+
+        # ✅ ИСПРАВЛЕНО: Проверяем разные варианты успешного ответа
+        # RunBlob может вернуть либо success=true, либо сразу generation_id/task_id
+        has_success_field = data.get("success") is True
+        has_task_id = bool(data.get("task_id"))
+        has_generation_id = bool(data.get("generation_id"))
+        
+        is_success = has_success_field or has_task_id or has_generation_id
+        
+        if status >= 400 or not is_success:
             code, detail = _pick_code_and_detail(data.get("message"), fallback_code="TASK_FAILED")
+            logger.warning(f"RunBlob /generate failed: code={code}, detail={detail}, full_response={data}")
             if raise_for_status:
                 raise RunBlobError(code=code, message=detail, http_status=status)
             return {"ok": False, "error": code, "detail": detail, "http_status": status, "raw": data}
 
-        return {"ok": True, **data}
+        # ✅ ИСПРАВЛЕНО: Извлекаем task_id из разных возможных полей
+        task_id = data.get("task_id") or data.get("generation_id") or data.get("id")
+        
+        logger.info(f"RunBlob /generate success: task_id={task_id}")
+        
+        return {"ok": True, "task_id": task_id, **data}
 
     except (asyncio.TimeoutError, aiohttp.ClientError) as ce:
-        # Считаем это отказом провайдера/сети — маппим в GOOGLE_DECLINED
+        logger.error(f"RunBlob /generate network error: {ce}")
         if raise_for_status:
             raise RunBlobError(code="GOOGLE_DECLINED", message=str(ce))
         return {"ok": False, "error": "GOOGLE_DECLINED", "detail": str(ce)}
@@ -241,7 +237,7 @@ async def status(
     raise_for_status: bool = True,
     timeout_seconds: int = 30,
 ) -> Dict[str, Any]:
-    url = f"{BASE}/api/veo/status/{task_id}"
+    url = f"{BASE}/v1/veo/status/{task_id}"
 
     close_session = False
     if session is None:
@@ -255,6 +251,9 @@ async def status(
 
     try:
         status_code, data = await _get_json_with_retries(session, url, AUTH_HEADER, attempts=3)
+
+        # ✅ ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ
+        logger.info(f"RunBlob /status response: HTTP {status_code}, data={data}")
 
         if status_code >= 400:
             if raise_for_status:

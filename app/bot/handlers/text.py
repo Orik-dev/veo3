@@ -173,6 +173,6 @@ async def set_prompt(msg: Message, state: FSMContext):
         # await msg.answer(await t(session, msg.from_user.id, "task.created", id=task_id))
         await msg.answer(
             "🎬 Видео начало создаваться. Это займёт несколько минут.\n"
-            f"💰 Остаток генераций: {balance_left}\n\n"
+            # f"💰 Остаток генераций: {balance_left}\n\n"
             "Я пришлю видео сюда, когда оно будет готово!"
         )

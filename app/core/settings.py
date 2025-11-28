@@ -41,7 +41,8 @@ class Settings(BaseSettings):
     COST_CREDITS_FAST: int = 1
     COST_CREDITS_QUALITY: int = 1
 
-    RUNBLOB_BASE_URL: str = "https://api.runblob.com"
+    # ✅ ИСПРАВЛЕНО: Правильный базовый URL согласно документации RunBlob
+    RUNBLOB_BASE_URL: str = "https://platform.runblob.io"
 
     EXAMPLES_URL: Optional[str] = None
     GUIDE_URL: Optional[str] = None
